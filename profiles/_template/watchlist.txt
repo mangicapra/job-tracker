@@ -1,0 +1,11 @@
+# Companies to watch. One link per line: paste the company's job board,
+# or ANY job link from it (e.g. a result from your Google site: searches) —
+# the script works out the board from the link and checks every open role there.
+#
+# Supported: Greenhouse, Lever, Ashby, Workable, SmartRecruiters, Recruitee,
+# Personio, Breezy, BambooHR. Others (Workday, Teamtailor, iCIMS…) are skipped
+# and listed at the bottom of out/keyword-report.md.
+# Lines starting with # are ignored.
+
+
+# Add company job-board links below

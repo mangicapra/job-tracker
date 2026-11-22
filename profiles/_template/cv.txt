@@ -1,0 +1,1 @@
+Paste the CV here as plain text (or run: pdftotext -layout cv.pdf cv.txt).

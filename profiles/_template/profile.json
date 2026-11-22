@@ -1,0 +1,29 @@
+{
+  "titles": [
+    "frontend developer",
+    "frontend engineer",
+    "react developer"
+  ],
+  "excludeTitles": [
+    "intern",
+    "internship",
+    "manager"
+  ],
+  "boostTitleWords": [
+    "react",
+    "typescript"
+  ],
+  "avoidTitleWords": [
+    "principal",
+    "staff",
+    "director",
+    "junior"
+  ],
+  "canWorkIn": "europe",
+  "remoteOnly": true,
+  "localPlaces": [
+    "bosnia",
+    "banja luka",
+    "sarajevo"
+  ]
+}
