@@ -1,0 +1,30 @@
+# Job sites searched on every run (shared by all profiles). One per line.
+# Each site is searched with the job titles from the profile being run.
+# Lines starting with # are ignored. Results appear in the "Source check"
+# section of keyword-report.md, so you'll see if one stops working.
+
+# Public API, no key needed. 4dayweek asks for a credit if you publish its data.
+4dayweek
+speedrun
+workingnomads
+
+# Any job site with an RSS feed works too: "rss" then the feed URL.
+# Unverified guess (it's a WordPress site, and this is the usual job feed address):
+rss https://euremotejobs.com/?feed=job_feed
+
+# Not supported, and why. Add them back here if they ever publish a feed.
+#   wellfound.com         blocks automated access and its terms forbid scraping
+#   jobgether.com         reposts jobs from elsewhere behind a paywall
+#   kickresume.com        a CV builder with job matching, not a job board
+#   gofractional.com      members-only marketplace; you apply to join
+#   portfoliojobs.a16z.com, indexventures.com/startup-jobs, builtineurope.com (Balderton)
+#                         VC portfolio boards with no public feed. Their jobs live on the
+#                         portfolio companies' own Greenhouse/Lever/Ashby boards, so add the
+#                         companies you like to your watchlist instead.
+#   lennysjobs.com        no feed (runs on TrueUp, which collects from company boards)
+#   remotefront.com, remoteted.com, startupmap.one
+#                         no feed; they also collect from company career pages
+#   euremotejobs.com      see the rss line above
+#   jsgurujobs.com        no feed; JavaScript developer roles only
+#   justjoin.it, nofluffjobs.com
+#                         Polish IT boards with no documented public API

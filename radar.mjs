@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-// Job radar: pulls open roles from (1) the public jobs_db API and (2) the
-// public job-board APIs of companies on a watchlist, keeps the ones the person
+// Job radar: pulls open roles from (1) the public jobs_db API, (2) the public
+// job-board APIs of companies on a watchlist and (3) job sites with a public
+// feed (sites.txt), removes duplicates, keeps the ones the person
 // can actually take, scores them against their CV and writes CSVs you can open
 // in Google Sheets / Excel.
 //
@@ -9,9 +10,10 @@
 //   cv.txt         their CV as plain text
 //   watchlist.txt  company job-board links to check
 //
-//   node radar.mjs dragan             # both sources
+//   node radar.mjs dragan             # every source
 //   node radar.mjs dragan --boards    # watchlist only (fast, run this daily)
-//   node radar.mjs dragan --db        # jobs_db only
+//   node radar.mjs dragan --sites     # job sites in sites.txt only
+//   node radar.mjs dragan --db        # jobs_db only (flags can be combined)
 //   node radar.mjs dragan --all       # also keep roles they can't take, marked
 //
 // Needs Node 18+ (built-in fetch). No npm install.
@@ -24,8 +26,9 @@ const DIR = path.dirname(fileURLToPath(import.meta.url));
 const PROFILES = path.join(DIR, "profiles");
 const argv = process.argv.slice(2);
 const FLAGS = new Set(argv.filter((a) => a.startsWith("--")));
-const ONLY_DB = FLAGS.has("--db");
-const ONLY_BOARDS = FLAGS.has("--boards");
+// --db, --boards, --sites pick sources; none given means all three
+const PICKED = ["--db", "--boards", "--sites"].filter((f) => FLAGS.has(f));
+const USE = (f) => PICKED.length === 0 || PICKED.includes(f);
 const KEEP_ALL = FLAGS.has("--all");
 
 const DB_MAX_ROWS = 4000; // most rows to pull from jobs_db per run
@@ -66,7 +69,7 @@ function loadProfile() {
   if (!name || !available.includes(name)) {
     console.error(name ? `No profile called "${name}".` : "Say which profile to run.");
     console.error(`Profiles: ${available.join(", ") || "(none yet — copy profiles/_template)"}`);
-    console.error("Usage: node radar.mjs <profile> [--boards|--db|--all]");
+    console.error("Usage: node radar.mjs <profile> [--boards] [--sites] [--db] [--all]");
     process.exit(1);
   }
   const dir = path.join(PROFILES, name);
@@ -95,6 +98,12 @@ function loadProfile() {
 }
 
 // ---------- helpers ----------
+const START = Date.now();
+function log(msg) {
+  const t = Math.round((Date.now() - START) / 1000);
+  console.log(`[${String(Math.floor(t / 60)).padStart(2, "0")}:${String(t % 60).padStart(2, "0")}] ${msg}`);
+}
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function decodeEntities(s) {
@@ -149,21 +158,22 @@ async function fromJobsDb(profile) {
   ].join(",");
   // short titles like "PM" would match half the database; the title filter catches them later
   const phrases = profile.titles.filter((t) => t.trim().length >= 4 && !/[,()]/.test(t));
-  if (!phrases.length) { console.warn("  jobs_db skipped: no title long enough to search for"); return []; }
+  if (!phrases.length) { log("jobs_db: skipped, no title long enough to search for"); return []; }
   const or = `(${phrases.map((t) => `title.ilike.*${t.trim()}*`).join(",")})`;
   const remote = profile.remoteOnly ? "&workplace_type=eq.Remote" : "";
   const jobs = [];
+  log(`jobs_db: searching for ${phrases.join(", ")}${profile.remoteOnly ? " (remote only)" : ""}…`);
   for (let offset = 0; offset < DB_MAX_ROWS; offset += DB_PAGE) {
     const url = `${JOBS_DB.url}?select=${select}&or=${encodeURIComponent(or)}${remote}&limit=${DB_PAGE}&offset=${offset}`;
     let rows;
     try {
       rows = await getJSON(url, { headers: { apikey: JOBS_DB.key } }, 3);
     } catch (e) {
-      console.warn(`  jobs_db stopped at offset ${offset}: ${e.message}`);
+      log(`jobs_db: stopped at row ${offset}: ${e.message}`);
       break;
     }
     if (!Array.isArray(rows)) {
-      console.warn("  jobs_db returned something unexpected:", String(JSON.stringify(rows)).slice(0, 200));
+      log(`jobs_db: unexpected answer: ${String(JSON.stringify(rows)).slice(0, 200)}`);
       break;
     }
     for (const r of rows) {
@@ -179,11 +189,11 @@ async function fromJobsDb(profile) {
         hq: r.company_hq_country || "", size: r.company_employee_count || "",
       });
     }
-    process.stdout.write(`\r  jobs_db: ${jobs.length} rows`);
+    log(`jobs_db: ${jobs.length} rows so far`);
     if (rows.length < DB_PAGE) break;
     await sleep(300);
   }
-  process.stdout.write("\n");
+  log(`jobs_db: done, ${jobs.length} rows`);
   return jobs;
 }
 
@@ -326,18 +336,233 @@ async function fromBoards(profile) {
     if (!seen.has(key)) { seen.add(key); boards.push(b); }
   }
   const all = [];
+  log(`watchlist: checking ${boards.length} company boards…`);
+  let done = 0;
   await pool(boards, 5, async (b) => {
+    const label = `${b.ats}/${b.slug}`;
+    log(`watchlist: → ${label}`);
     try {
       const jobs = await BOARDS[b.ats](b);
+      done++;
+      log(`watchlist: ${jobs ? "✓" : "✗"} ${label}${jobs ? `: ${jobs.length} roles` : ": not found"} (${done}/${boards.length})`);
       if (!jobs) { report.push(`not found: ${b.ats}/${b.slug} — check the link`); return; }
       report.push(`ok: ${b.ats}/${b.slug} — ${jobs.length} open role${jobs.length === 1 ? "" : "s"}`);
       for (const j of jobs) all.push({ ...j, source: b.ats, company: b.slug, description: j.description || "" });
     } catch (e) {
+      done++;
+      log(`watchlist: ✗ ${label}: ${e.message} (${done}/${boards.length})`);
       report.push(`error: ${b.ats}/${b.slug} — ${e.message}`);
     }
   });
-  console.log(`  watchlist: ${boards.length} boards, ${all.length} open roles in total`);
+  log(`watchlist: done, ${all.length} open roles from ${boards.length} boards`);
   return { jobs: all, report: report.sort() };
+}
+
+// ---------- source 3: job sites with a public feed (sites.txt) ----------
+// Each runs a search per job title in the profile and returns the same job shape
+// as the boards. Only sites that publish an API or feed for this are here.
+function titleQueries(profile) {
+  return [...new Set(profile.titles.map((t) => t.trim()).filter((t) => t.length >= 4))];
+}
+
+const SITES = {
+  // 4dayweek.io — documented public API, no key, 60 requests/minute, asks for a credit if you publish the data
+  async "4dayweek"(profile) {
+    const out = [];
+    for (const q of titleQueries(profile)) {
+      for (let page = 1; page <= 5; page++) {
+        const params = new URLSearchParams({ q, page: String(page), limit: "100", posted_after: "45" });
+        if (profile.remoteOnly) params.set("work_arrangement", "remote");
+        log(`4dayweek: "${q}" page ${page}`);
+        const data = await getJSON(`https://4dayweek.io/api/v2/jobs?${params}`);
+        await sleep(1100); // stay under their rate limit
+        if (data?.notFound || !Array.isArray(data?.data)) break;
+        for (const j of data.data) {
+          const locs = (j.locations || []).map((l) => [l.work_arrangement, l.country || l.continent].filter(Boolean).join(" "));
+          out.push({
+            id: `4dw:${j.id || j.slug}`, title: j.title || "", company: j.company?.name || "",
+            location: locs.join("; ") || j.work_arrangement || "",
+            remote: j.work_arrangement === "remote" || (j.locations || []).some((l) => l.work_arrangement === "remote") || undefined,
+            salary: j.salary_min || j.salary_max
+              ? `${j.salary_currency || ""} ${j.salary_min || "?"}–${j.salary_max || "?"}${j.salary_period ? "/" + j.salary_period : ""}`.trim() : "",
+            url: j.url || "", posted: (j.posted_at || "").slice(0, 10), description: toText(j.description || ""),
+          });
+        }
+        if (!data.has_more) break;
+      }
+    }
+    return out;
+  },
+
+  // speedrun talent network (a16z speedrun) — documented public API, no key.
+  // The list has no descriptions, so we fetch them only for roles whose title matches.
+  async speedrun(profile) {
+    const base = "https://speedrun-talent-network.com/api/v1";
+    const out = [];
+    for (const q of titleQueries(profile)) {
+      for (let page = 0; page < 5; page++) {
+        const params = new URLSearchParams({ q, page: String(page), source: "job-radar" });
+        if (profile.remoteOnly) params.set("wp", "remote");
+        log(`speedrun: "${q}" page ${page + 1}`);
+        const data = await getJSON(`${base}/jobs?${params}`);
+        await sleep(500);
+        if (data?.notFound || !Array.isArray(data?.jobs)) break;
+        for (const j of data.jobs) {
+          if (j.stealth) continue;
+          out.push({
+            id: `sr8:${j.id}`, _detail: `${base}/jobs/${j.id}?source=job-radar`, title: j.title || "", company: j.company || "",
+            location: [j.workplace_type, j.location].filter(Boolean).join(" · "),
+            remote: j.remote || j.workplace_type === "Remote" || undefined,
+            salary: j.comp_min || j.comp_max
+              ? `${j.comp_currency || ""} ${j.comp_min || "?"}–${j.comp_max || "?"}${j.comp_period ? "/" + j.comp_period : ""}`.trim() : "",
+            url: j.url || "", posted: (j.published_at || "").slice(0, 10), description: "",
+          });
+        }
+        if (!data.has_more) break;
+      }
+    }
+    const wanted = out.filter((j) => profile.titleInclude.test(j.title)).slice(0, 150);
+    if (wanted.length) log(`speedrun: fetching ${wanted.length} job descriptions…`);
+    let got = 0;
+    await pool(wanted, 3, async (j) => {
+      if (++got % 10 === 0) log(`speedrun: descriptions ${got}/${wanted.length}`);
+      try {
+        const d = await getJSON(j._detail);
+        j.description = toText(d?.description_text || d?.job?.description_text || "");
+      } catch { /* keep title-only */ }
+      await sleep(300);
+    });
+    return out;
+  },
+
+  // Working Nomads — public JSON feed of current remote jobs (one request)
+  async workingnomads() {
+    log("workingnomads: downloading the feed…");
+    const data = await getJSON("https://www.workingnomads.com/api/exposed_jobs/");
+    if (data?.notFound || !Array.isArray(data)) return null;
+    return data.map((j) => ({
+      id: `wn:${j.url}`, title: j.title || "", company: j.company_name || "",
+      location: `Remote${j.location ? ` (${j.location})` : ""}`, remote: true,
+      url: j.url || "", posted: (j.pub_date || "").slice(0, 10),
+      description: toText(`${j.description || ""} ${j.tags || ""}`),
+    }));
+  },
+
+  // Any RSS feed of jobs: "rss <url>" in sites.txt
+  async rss(profile, url) {
+    log(`rss: downloading ${url}…`);
+    const xml = await getJSON(url);
+    if (xml?.notFound || typeof xml !== "string" || !/<item[\s>]/.test(xml)) return null;
+    const tag = (s, t) => toText(((s.match(new RegExp(`<${t}[^>]*>([\\s\\S]*?)</${t}>`)) || [])[1] || "")
+      .replace(/<!\[CDATA\[|\]\]>/g, ""));
+    const host = new URL(url).hostname.replace(/^www\./, "");
+    return [...xml.matchAll(/<item[\s>]([\s\S]*?)<\/item>/g)].map(([, it]) => {
+      let title = tag(it, "title");
+      // feeds usually say "Title at Company" or "Company: Title"
+      let company = tag(it, "company") || tag(it, "job_listing:company") || tag(it, "dc:creator");
+      const at = title.match(/^(.*)\s+at\s+([^@]+)$/i);
+      const colon = title.match(/^([^:]{2,40}):\s+(.*)$/);
+      if (!company && at) { title = at[1]; company = at[2]; } else if (!company && colon) { company = colon[1]; title = colon[2]; }
+      const link = tag(it, "link") || (it.match(/<link[^>]*href="([^"]+)"/) || [])[1] || "";
+      const desc = tag(it, "description") || tag(it, "content:encoded");
+      const loc = tag(it, "location") || tag(it, "job_listing:location") || "";
+      return {
+        id: `rss:${host}:${tag(it, "guid") || link}`, title, company, location: loc,
+        remote: /remote|anywhere/i.test(`${loc} ${title} ${desc}`) || undefined,
+        url: link, posted: (() => { const d = new Date(tag(it, "pubDate")); return isNaN(d) ? "" : d.toISOString().slice(0, 10); })(),
+        description: desc,
+      };
+    });
+  },
+};
+
+async function fromSites(profile) {
+  const file = path.join(DIR, "sites.txt");
+  if (!fs.existsSync(file)) return { jobs: [], report: [] };
+  const report = [];
+  const all = [];
+  for (const raw of fs.readFileSync(file, "utf8").split("\n")) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#")) continue;
+    const [name, arg] = line.split(/\s+/, 2);
+    const fn = SITES[name];
+    if (!fn) { report.push(`skipped (unknown site): ${line}`); continue; }
+    const label = arg ? `${name} ${arg}` : name;
+    log(`sites: → ${label}`);
+    try {
+      const jobs = await fn(profile, arg);
+      if (!jobs) { log(`sites: ✗ ${label}: not found`); report.push(`not found: ${label}`); continue; }
+      log(`sites: ✓ ${label}: ${jobs.length} roles`);
+      report.push(`ok: ${label} — ${jobs.length} roles`);
+      for (const j of jobs) { delete j._detail; all.push({ ...j, source: name === "rss" ? new URL(arg).hostname.replace(/^www\./, "") : name }); }
+    } catch (e) {
+      log(`sites: ✗ ${label}: ${e.message}`);
+      report.push(`error: ${label} — ${e.message}`);
+    }
+  }
+  log(`sites: done, ${all.length} roles`);
+  return { jobs: all, report };
+}
+
+// ---------- duplicates ----------
+// The same role turns up on the company's own board, on aggregators and in
+// jobs_db, often with small differences in the company name or title. Two roles
+// count as the same if they share a link, or the same company and title once
+// legal suffixes, locations and punctuation are stripped.
+const SOURCE_RANK = { greenhouse: 1, lever: 1, ashby: 1, workable: 1, smartrecruiters: 1, recruitee: 1, personio: 1,
+  bamboohr: 1, breezy: 1, "4dayweek": 2, speedrun: 2, jobs_db: 3, workingnomads: 4 };
+const rank = (s) => SOURCE_RANK[s] || 5;
+
+function normCompany(s) {
+  let c = String(s || "").toLowerCase().normalize("NFKD").replace(/[̀-ͯ]/g, "")
+    .replace(/\b(inc|incorporated|ltd|limited|llc|gmbh|ag|sa|sas|bv|ab|oy|plc|corp|corporation|co|srl|spa|doo|d\.o\.o)\b\.?/g, " ")
+    .replace(/[^a-z0-9]/g, "");
+  for (const suf of ["hq", "inc", "com", "io", "app"]) if (c.length > suf.length + 3 && c.endsWith(suf)) c = c.slice(0, -suf.length);
+  return c;
+}
+function normTitle(s) {
+  return String(s || "").toLowerCase()
+    .replace(/\([^)]*\)|\[[^\]]*\]/g, " ")                       // (Remote), (global), [EU]
+    .replace(/\s[-–—|]\s.*(remote|europe|emea|us|usa|uk|americas|global|worldwide|anywhere|hybrid|onsite|[a-z]+,\s*[a-z]+).*$/i, " ")
+    .replace(/\b(remote|global|worldwide|emea|europe|eu|us|usa|uk|americas|hybrid|onsite|m\/f\/d|f\/m\/d|m\/w\/d|all genders)\b/g, " ")
+    .replace(/\bsr\b\.?/g, "senior").replace(/\bjr\b\.?/g, "junior")
+    .replace(/[^a-z0-9]+/g, " ").trim();
+}
+function normUrl(u) {
+  try { const x = new URL(u); return `${x.hostname.replace(/^www\./, "")}${x.pathname.replace(/\/+$/, "")}`.toLowerCase(); } catch { return ""; }
+}
+
+function dedupe(jobs) {
+  const groups = [];
+  const byKey = new Map();
+  const byUrl = new Map();
+  for (const j of jobs) {
+    const key = `${normCompany(j.company)}|${normTitle(j.title)}`;
+    const url = normUrl(j.url);
+    const g = (url && byUrl.get(url)) || (normCompany(j.company) && byKey.get(key));
+    if (g) {
+      g.push(j);
+    } else {
+      const ng = [j];
+      groups.push(ng);
+      byKey.set(key, ng);
+    }
+    if (url) byUrl.set(url, byUrl.get(url) || byKey.get(key));
+  }
+  return groups.map((g) => {
+    g.sort((a, b) => rank(a.source) - rank(b.source) || (b.description || "").length - (a.description || "").length);
+    const best = { ...g[0] };
+    best.key = `${normCompany(best.company)}|${normTitle(best.title)}`;
+    if (!best.description) best.description = g.find((x) => x.description)?.description || "";
+    if (!best.salary) best.salary = g.find((x) => x.salary)?.salary || "";
+    if (!best.industry) best.industry = g.find((x) => x.industry)?.industry || "";
+    const locs = [...new Set(g.map((x) => x.location).filter(Boolean))];
+    best.location = locs.slice(0, 4).join(" | ") + (locs.length > 4 ? ` | +${locs.length - 4} more` : "");
+    best.remote = g.some((x) => x.remote === true) || undefined;
+    best.also_on = [...new Set(g.slice(1).map((x) => x.source).filter((s) => s !== best.source))].join(", ");
+    best.copies = g.length;
+    return best;
+  });
 }
 
 // ---------- where can they work ----------
@@ -492,24 +717,36 @@ async function main() {
   fs.mkdirSync(profile.out, { recursive: true });
   console.log(`Profile: ${profile.name} (${profile.skills ? "skill list" : "automatic"} matching, can work in: ${profile.region})`);
 
-  console.log("Collecting jobs…");
+  log("Collecting jobs…");
   const jobs = [];
   let boardReport = [];
-  if (!ONLY_BOARDS) {
-    try { jobs.push(...(await fromJobsDb(profile))); } catch (e) { console.warn("  jobs_db failed:", e.message); }
+  let siteReport = [];
+  if (USE("--db")) {
+    try { jobs.push(...(await fromJobsDb(profile))); } catch (e) { log(`jobs_db: failed: ${e.message}`); }
   }
-  if (!ONLY_DB) {
+  if (USE("--boards")) {
     const b = await fromBoards(profile);
     jobs.push(...b.jobs);
     boardReport = b.report;
   }
+  if (USE("--sites")) {
+    const s = await fromSites(profile);
+    jobs.push(...s.jobs);
+    siteReport = s.report;
+  }
 
-  const relevant = jobs.filter((j) =>
+  const matching = jobs.filter((j) =>
     profile.titleInclude.test(j.title) && !(profile.titleExclude && profile.titleExclude.test(j.title)));
+  const relevant = dedupe(matching);
+  log(`${jobs.length} listings collected, ${matching.length} match the titles → ${relevant.length} unique roles after removing duplicates`);
+  log("Scoring against the CV and writing files…");
   const scorer = profile.skills ? curatedScorer(profile) : autoScorer(profile, relevant);
 
   const seenFile = path.join(profile.out, "seen.json");
-  const seenBefore = new Set(fs.existsSync(seenFile) ? JSON.parse(fs.readFileSync(seenFile, "utf8")) : []);
+  // seen.json holds de-duplicated role keys, so a role reposted on another site isn't "new"
+  let seenData = fs.existsSync(seenFile) ? JSON.parse(fs.readFileSync(seenFile, "utf8")) : null;
+  if (Array.isArray(seenData)) seenData = null; // older format: start fresh, nothing marked new this run
+  const seenBefore = new Set(seenData?.keys || []);
   const firstRun = seenBefore.size === 0;
 
   const rows = relevant.map((j) => {
@@ -525,7 +762,7 @@ async function main() {
       ...j, score: Math.max(0, Math.min(100, Math.round(score))), eligibility: elig, keep,
       workplace: remote ? "remote" : "onsite/hybrid",
       matched: s.matched.join("; "), gaps: s.gaps.join("; "), asked: s.asked,
-      new: firstRun || seenBefore.has(j.id) ? "" : "NEW",
+      new: firstRun || seenBefore.has(j.key) ? "" : "NEW",
     };
   });
 
@@ -533,7 +770,7 @@ async function main() {
   usable.sort((a, b) => (b.new === "NEW") - (a.new === "NEW") || b.score - a.score);
   writeCSV(path.join(profile.out, "matches.csv"), usable,
     ["new", "score", "eligibility", "workplace", "title", "company", "location", "salary", "source",
-      "posted", "url", "matched", "gaps"]);
+      "posted", "url", "also_on", "matched", "gaps"]);
 
   // company roll-up (every relevant role, incl. ones they can't take, so they see who hires)
   const companies = new Map();
@@ -583,14 +820,15 @@ async function main() {
     "",
     ...(present.length ? present.map(([t, n]) => `- ${t} — in ${pct(n)} of roles`) : ["- (nothing stands out)"]),
     "",
-    "## Watchlist board check",
+    "## Source check",
     "",
-    ...(boardReport.length ? boardReport.map((l) => `- ${l}`) : ["- no watchlist boards checked"]),
+    ...(boardReport.length ? boardReport.map((l) => `- watchlist ${l}`) : ["- no watchlist boards checked"]),
+    ...siteReport.map((l) => `- site ${l}`),
     "",
   ].join("\n");
   fs.writeFileSync(path.join(profile.out, "keyword-report.md"), md);
 
-  fs.writeFileSync(seenFile, JSON.stringify([...new Set([...seenBefore, ...rows.map((r) => r.id)])]));
+  fs.writeFileSync(seenFile, JSON.stringify({ v: 2, keys: [...new Set([...seenBefore, ...rows.map((r) => r.key)])] }));
 
   console.log(`\nRelevant roles found: ${rows.length}. Kept: ${usable.length}` +
     `${KEEP_ALL ? ` (incl. ${usable.filter((r) => !r.keep).length} they can't take)` : ""}.`);

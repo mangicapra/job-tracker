@@ -2,17 +2,21 @@
 
 Finds roles a person can actually take, scores them against their CV, and shows what's new since the last run. It works for any role and any person: each person gets a folder under `profiles/` with their CV, what they're looking for and the companies they want to watch.
 
-Roles come from two places. The first is the public jobs_db API, a snapshot of US job listings from hiring.cafe, searched by the titles in the profile. The second is the public job-board APIs of the companies in the person's `watchlist.txt`. Greenhouse, Lever, Ashby, Workable and the others publish open roles as JSON so companies can show them on their careers pages, so the script never scrapes HTML or Google.
+Roles come from three places. The first is the public jobs_db API, a snapshot of US job listings from hiring.cafe, searched by the titles in the profile. The second is the public job-board APIs of the companies in the person's `watchlist.txt`. Greenhouse, Lever, Ashby, Workable and the others publish open roles as JSON so companies can show them on their careers pages. The third is the job sites in `sites.txt` that publish an API or feed: 4dayweek.io, the speedrun talent network, Working Nomads, and any site with an RSS feed. The script never scrapes HTML or Google. Sites without a feed are listed in `sites.txt` with the reason they're not included.
+
+The same role often shows up in several places, so duplicates are merged before anything is scored (see "Duplicates" below).
 
 ## Run it
 
 Needs Node 18 or newer. No `npm install`.
 
 ```bash
-node radar.mjs <name>            # both sources
-node radar.mjs <name> --boards   # only the watchlist (fast, run this daily)
-node radar.mjs <name> --db       # only jobs_db
-node radar.mjs <name> --all      # also show roles they can't take, marked
+node radar.mjs <name>                  # every source
+node radar.mjs <name> --boards         # only the watchlist (fast, run this daily)
+node radar.mjs <name> --sites          # only the job sites in sites.txt
+node radar.mjs <name> --db             # only jobs_db
+node radar.mjs <name> --boards --sites # flags combine
+node radar.mjs <name> --all            # also show roles they can't take, marked
 ```
 
 If there's only one profile, you can leave out the name.
@@ -41,11 +45,21 @@ There are two modes.
 
 A good approach for a new kind of role: start in automatic mode, read the keyword report, then turn the terms that matter into a skill list.
 
+## Job sites (`sites.txt`)
+
+`sites.txt` is shared by every profile. Each site is searched with the titles from the profile being run. Remove a line to stop using a site. To add a site with an RSS feed, add `rss <feed url>`. The euremotejobs line is a guess at their feed address. If it's wrong, the source check at the bottom of the keyword report will show it as not found.
+
+## Duplicates
+
+Before scoring, listings for the same role are merged into one row. Two listings count as the same role if they have the same link, or the same company and title after cleanup. The cleanup ignores legal suffixes ("RevenueCat, Inc." = "RevenueCat" = the `revenuecat` board), location tags in titles ("Product Owner (Remote)" or "Product Owner - EMEA" = "Product Owner"), "Sr" vs "Senior", and punctuation. The kept row comes from the best source: the company's own board first, then the job sites, then jobs_db, then aggregators. It picks up the best description and salary from the copies, lists every location, and names the other sources in the `also_on` column. The same thing catches a company posting one role in several cities, and repeated rows from jobs_db.
+
+"New since last run" is tracked per merged role too, so a role that was already seen doesn't come back as NEW when another site reposts it. It also won't catch a role with a completely different title on another site, but that's rare.
+
 ## What you get in `profiles/<name>/out/`
 
-- `matches.csv`: every role they could take, best fit first. It shows what matched the CV and what the ad asks for that the CV doesn't show. After the first run, new roles are marked NEW and sorted to the top.
+- `matches.csv`: every role they could take, one row per role, best fit first. It shows what matched the CV, what the ad asks for that the CV doesn't show, and the other sites the role was also found on. After the first run, new roles are marked NEW and sorted to the top.
 - `companies.csv`: every company hiring for those titles, with how many of its roles they could take. Use it to grow the watchlist and pick companies for direct outreach.
-- `keyword-report.md`: what the better-matching ads ask for most, split into what's in the CV and what isn't. The board check at the bottom lists any watchlist link that didn't work.
+- `keyword-report.md`: what the better-matching ads ask for most, split into what's in the CV and what isn't. The source check at the bottom shows how many roles each board and site returned, and any that failed.
 
 ## Reading the columns
 
