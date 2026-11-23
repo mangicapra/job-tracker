@@ -742,12 +742,12 @@ async function main() {
   log("Scoring against the CV and writing files…");
   const scorer = profile.skills ? curatedScorer(profile) : autoScorer(profile, relevant);
 
-  const seenFile = path.join(profile.out, "seen.json");
-  // seen.json holds de-duplicated role keys, so a role reposted on another site isn't "new"
-  let seenData = fs.existsSync(seenFile) ? JSON.parse(fs.readFileSync(seenFile, "utf8")) : null;
-  if (Array.isArray(seenData)) seenData = null; // older format: start fresh, nothing marked new this run
-  const seenBefore = new Set(seenData?.keys || []);
-  const firstRun = seenBefore.size === 0;
+  // history.json remembers every role ever seen (by its de-duplicated key, so a
+  // role reposted on another site isn't "new") plus a log of past runs.
+  const history = loadHistory(profile);
+  const firstRun = Object.keys(history.roles).length === 0;
+  const lastRun = history.runs[history.runs.length - 1];
+  const now = localStamp();
 
   const rows = relevant.map((j) => {
     const [elig, ok] = eligibility(locationSignals(j, profile), profile);
@@ -762,15 +762,25 @@ async function main() {
       ...j, score: Math.max(0, Math.min(100, Math.round(score))), eligibility: elig, keep,
       workplace: remote ? "remote" : "onsite/hybrid",
       matched: s.matched.join("; "), gaps: s.gaps.join("; "), asked: s.asked,
-      new: firstRun || seenBefore.has(j.key) ? "" : "NEW",
+      new: history.roles[j.key] ? "" : "NEW",
+      first_seen: history.roles[j.key]?.first_seen || now,
     };
   });
 
   const usable = rows.filter((r) => KEEP_ALL || r.keep);
   usable.sort((a, b) => (b.new === "NEW") - (a.new === "NEW") || b.score - a.score);
-  writeCSV(path.join(profile.out, "matches.csv"), usable,
-    ["new", "score", "eligibility", "workplace", "title", "company", "location", "salary", "source",
-      "posted", "url", "also_on", "matched", "gaps"]);
+  const COLS = ["new", "score", "eligibility", "workplace", "title", "company", "location", "salary", "source",
+    "posted", "first_seen", "url", "also_on", "matched", "gaps"];
+  writeCSV(path.join(profile.out, "matches.csv"), usable, COLS);
+
+  // only what's new since the last run: new.csv (latest) + a dated copy in history/
+  const fresh = usable.filter((r) => r.new).sort((a, b) => b.score - a.score);
+  writeCSV(path.join(profile.out, "new.csv"), fresh, COLS.filter((c) => c !== "new"));
+  if (fresh.length) {
+    fs.mkdirSync(path.join(profile.out, "history"), { recursive: true });
+    const runFile = `${now.replace(" ", "_").replace(":", "")}-new.csv`;
+    writeCSV(path.join(profile.out, "history", runFile), fresh, COLS.filter((c) => c !== "new"));
+  }
 
   // company roll-up (every relevant role, incl. ones they can't take, so they see who hires)
   const companies = new Map();
@@ -828,15 +838,64 @@ async function main() {
   ].join("\n");
   fs.writeFileSync(path.join(profile.out, "keyword-report.md"), md);
 
-  fs.writeFileSync(seenFile, JSON.stringify({ v: 2, keys: [...new Set([...seenBefore, ...rows.map((r) => r.key)])] }));
+  for (const r of rows) {
+    const h = history.roles[r.key];
+    if (h) { h.last_seen = now; h.times_seen = (h.times_seen || 1) + 1; }
+    else history.roles[r.key] = { first_seen: now, last_seen: now, times_seen: 1, title: r.title, company: r.company, url: r.url };
+  }
+  const sources = PICKED.length ? PICKED.map((f) => f.slice(2)).join("+") : "all";
+  history.runs.push({ at: now, sources, listings: jobs.length, unique_roles: rows.length, kept: usable.length, new: fresh.length });
+  saveHistory(profile, history);
+  writeCSV(path.join(profile.out, "runs.csv"), history.runs, ["at", "sources", "listings", "unique_roles", "kept", "new"]);
 
-  console.log(`\nRelevant roles found: ${rows.length}. Kept: ${usable.length}` +
-    `${KEEP_ALL ? ` (incl. ${usable.filter((r) => !r.keep).length} they can't take)` : ""}.`);
-  if (!firstRun) console.log(`New since last run: ${usable.filter((r) => r.new).length}`);
-  console.log(`Wrote profiles/${profile.name}/out/ matches.csv, companies.csv, keyword-report.md`);
-  for (const r of usable.slice(0, 10)) {
+  console.log(`\nUnique roles found: ${rows.length}. You could take: ${usable.length}` +
+    `${KEEP_ALL ? ` (incl. ${usable.filter((r) => !r.keep).length} you can't)` : ""}.`);
+  if (firstRun) {
+    console.log(`First run, so all ${fresh.length} count as new. From the next run, new.csv only has roles you haven't seen.`);
+  } else if (!fresh.length) {
+    console.log(`No new roles since the last run (${lastRun?.at || "earlier"}).`);
+  } else {
+    console.log(`${fresh.length} new since the last run (${lastRun?.at || "earlier"}):`);
+  }
+  for (const r of fresh.slice(0, 20)) {
     console.log(`  ${String(r.score).padStart(3)}  ${r.eligibility.padEnd(20)} ${r.title} — ${r.company}`);
   }
+  if (fresh.length > 20) console.log(`  …and ${fresh.length - 20} more in new.csv`);
+  console.log(`\nFiles in profiles/${profile.name}/out/: new.csv (only new), matches.csv (everything open now), ` +
+    "companies.csv, keyword-report.md, runs.csv, history/");
+}
+
+// ---------- run history ----------
+function localStamp(d = new Date()) {
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+function loadHistory(profile) {
+  const file = path.join(profile.out, "history.json");
+  if (fs.existsSync(file)) {
+    const h = JSON.parse(fs.readFileSync(file, "utf8"));
+    return { roles: h.roles || {}, runs: h.runs || [] };
+  }
+  // carry over roles from the older seen.json, so they don't all come back as new
+  const old = path.join(profile.out, "seen.json");
+  const h = { roles: {}, runs: [] };
+  if (fs.existsSync(old)) {
+    const data = JSON.parse(fs.readFileSync(old, "utf8"));
+    const when = localStamp(fs.statSync(old).mtime);
+    for (const key of Array.isArray(data) ? [] : data.keys || []) {
+      h.roles[key] = { first_seen: when, last_seen: when, times_seen: 1 };
+    }
+    if (Object.keys(h.roles).length) h.runs.push({ at: when, sources: "earlier version", new: Object.keys(h.roles).length });
+  }
+  return h;
+}
+
+function saveHistory(profile, h) {
+  const file = path.join(profile.out, "history.json");
+  fs.writeFileSync(file, JSON.stringify({ v: 3, roles: h.roles, runs: h.runs }));
+  const old = path.join(profile.out, "seen.json");
+  if (fs.existsSync(old)) fs.renameSync(old, `${old}.old`);
 }
 
 main().catch((e) => { console.error(e.message || e); process.exit(1); });

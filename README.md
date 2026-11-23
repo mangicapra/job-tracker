@@ -53,12 +53,26 @@ A good approach for a new kind of role: start in automatic mode, read the keywor
 
 Before scoring, listings for the same role are merged into one row. Two listings count as the same role if they have the same link, or the same company and title after cleanup. The cleanup ignores legal suffixes ("RevenueCat, Inc." = "RevenueCat" = the `revenuecat` board), location tags in titles ("Product Owner (Remote)" or "Product Owner - EMEA" = "Product Owner"), "Sr" vs "Senior", and punctuation. The kept row comes from the best source: the company's own board first, then the job sites, then jobs_db, then aggregators. It picks up the best description and salary from the copies, lists every location, and names the other sources in the `also_on` column. The same thing catches a company posting one role in several cities, and repeated rows from jobs_db.
 
-"New since last run" is tracked per merged role too, so a role that was already seen doesn't come back as NEW when another site reposts it. It also won't catch a role with a completely different title on another site, but that's rare.
+New roles are tracked per merged role too (see "Run history"), so a role you've already seen doesn't come back as new when another site reposts it. A role reposted with a completely different title will still show up as new, but that's rare.
+
+## Run history
+
+Every role the radar has ever found is remembered in `out/history.json`. Each run compares against it, so you only have to look at what's new.
+
+- The first run counts everything as new. That's your starting point.
+- After that, `new.csv` holds only the roles that weren't seen in any earlier run, and the terminal lists them.
+- If nothing is new, the terminal says so and shows when the last run was.
+- A dated copy of each run's new roles is kept in `out/history/`, for example `2026-11-24_0800-new.csv`. Runs with nothing new don't write a file.
+- `runs.csv` logs every run: when, which sources, how many listings and roles, and how many were new.
+
+A run that checks only some sources (for example `--boards`) still records what it found, so those roles won't show as new again on the next full run. To start over and treat everything as new again, delete `out/history.json`.
 
 ## What you get in `profiles/<name>/out/`
 
-- `matches.csv`: every role they could take, one row per role, best fit first. It shows what matched the CV, what the ad asks for that the CV doesn't show, and the other sites the role was also found on. After the first run, new roles are marked NEW and sorted to the top.
+- `new.csv`: only the roles that are new since the last run, best fit first. This is the file to open every day.
+- `matches.csv`: every role they could take that's open right now, one row per role, best fit first. It shows what matched the CV, what the ad asks for that the CV doesn't show, when the role was first seen, and the other sites it was also found on. New roles are marked NEW and sorted to the top.
 - `companies.csv`: every company hiring for those titles, with how many of its roles they could take. Use it to grow the watchlist and pick companies for direct outreach.
+- `runs.csv` and `history/`: the run log and the dated copies of each run's new roles (see "Run history").
 - `keyword-report.md`: what the better-matching ads ask for most, split into what's in the CV and what isn't. The source check at the bottom shows how many roles each board and site returned, and any that failed.
 
 ## Reading the columns
