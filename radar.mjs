@@ -40,6 +40,9 @@ const JOBS_DB = {
 };
 
 // ---------- location signals (shared by every profile) ----------
+// The location field is trusted most. A job description only counts when it
+// says outright where people can work from: a company that is "a global leader"
+// or "has customers in Europe" says nothing about who it hires.
 const US_ONLY = [
   /\b(US|U\.S\.|USA|United States)[- ]?(only|based)\b/i,
   /must (be )?(located|based|reside|residing|live|living) in the (US|U\.S\.|USA|United States)/i,
@@ -48,12 +51,22 @@ const US_ONLY = [
   /\b(US|USA|United States)[^\n]{0,4}\bremote\b/i,
   /\bUS citizens?(hip)?\b|security clearance/i,
 ];
-const EUROPE = [/\beurope\b|\beuropean\b|\bEMEA\b|\bEU\b/i, /\bCET\b|\bCEST\b|GMT ?\+ ?[12]|UTC ?\+ ?[12]/i];
-// "remote-first" or "distributed team" says nothing about where they hire, so it's not here
-const WORLDWIDE = /anywhere|worldwide|world-wide|\bglobal(ly)?\b|any location|any country|any time ?zone/i;
-// A remote role tied to one European country: often open to residents of that
-// country (or the EU) only.
-const EU_COUNTRY = /estonia|latvia|lithuania|poland|germany|berlin|munich|hamburg|netherlands|amsterdam|belgium|france|paris|spain|madrid|barcelona|portugal|lisbon|ireland|dublin|united kingdom|\bUK\b|london|austria|vienna|switzerland|zurich|czech|prague|slovakia|hungary|budapest|romania|bulgaria|greece|italy|milan|denmark|sweden|stockholm|norway|finland|slovenia|croatia|serbia|cyprus|malta|luxembourg/i;
+// in a location field
+const LOC_WORLDWIDE = /anywhere|worldwide|world-wide|\bglobal(ly)?\b|any location|any country|international/i;
+const LOC_EUROPE = /\beurope\b|\beuropean\b|\bEMEA\b|\bEU\b|\bCET\b|\bCEST\b/i;
+// in a description: only explicit statements
+const TEXT_WORLDWIDE = /work (from )?anywhere|anywhere in the world|from any country|(hire|hiring|open to (candidates|applicants|people|talent)|candidates)[^.\n]{0,20}(anywhere|worldwide|globally|any country)|remote[\s(-]{1,3}(worldwide|global|anywhere)\b|fully remote[,\s-]+(worldwide|global|anywhere)|location:?\s*(worldwide|anywhere|global)/i;
+const TEXT_EUROPE = /remote[^.\n]{0,25}\b(europe|emea|the eu)\b|\b(europe|emea)\b[^.\n]{0,15}\bremote|(based|located|living|residing|reside) (in|within|anywhere in) (europe|the eu|emea)|(european|cet|cest|emea) (time ?zones?|hours|working hours)|\b(CET|CEST)\b|\b(GMT|UTC) ?\+ ?[12]\b/i;
+
+// Country codes as they appear at the end of "City, State, CC" (jobs_db and others)
+const EUROPE_CC = new Set("AT BE BG HR CY CZ DK EE FI FR DE GR HU IE IT LV LT LU MT NL PL PT RO SK SI ES SE GB UK CH NO IS BA RS ME MK AL XK MD".split(" "));
+const CC_RE = /,\s*([A-Z]{2})\s*(?=[;)|]|$)/g;
+// Places written out
+const EU_PLACE = /estonia|latvia|lithuania|poland|germany|(?<!new )berlin|munich|hamburg|netherlands|amsterdam|belgium|france|(?<!new )paris|spain|madrid|barcelona|portugal|lisbon|ireland|(?<!new )dublin|united kingdom|\bUK\b|(?<!new )london|austria|vienna|switzerland|zurich|czechia|czech republic|prague|slovakia|hungary|budapest|romania|bulgaria|greece|italy|milan|denmark|sweden|stockholm|norway|finland|slovenia|croatia|serbia|cyprus|malta|luxembourg|bosnia|montenegro|macedonia|albania/i;
+const US_STATES = "Alabama|Alaska|Arizona|Arkansas|California|Colorado|Connecticut|Delaware|Florida|Georgia|Hawaii|Idaho|Illinois|Indiana|Iowa|Kansas|Kentucky|Louisiana|Maine|Maryland|Massachusetts|Michigan|Minnesota|Mississippi|Missouri|Montana|Nebraska|Nevada|New Hampshire|New Jersey|New Mexico|New York|North Carolina|North Dakota|Ohio|Oklahoma|Oregon|Pennsylvania|Rhode Island|South Carolina|South Dakota|Tennessee|Texas|Utah|Vermont|Virginia|Washington|West Virginia|Wisconsin|Wyoming|District of Columbia";
+const NON_EU_NAMES = new RegExp(`\\b(USA|U\\.S\\.|United States|Americas|North America|LatAm|Latin America|South America|Canada|Mexico|Brazil|Argentina|Colombia|Chile|Peru|Uruguay|India|Pakistan|Philippines|Indonesia|Malaysia|Vietnam|APAC|Asia|Australia|New Zealand|Singapore|Japan|Africa|Nigeria|Kenya|Egypt|Israel|UAE|Dubai|San Francisco|Bay Area|Los Angeles|Seattle|Austin|Boston|Chicago|Denver|Atlanta|Miami|Dallas|Houston|Phoenix|Toronto|Vancouver|Montreal|Ottawa|Sao Paulo|São Paulo|Bangalore|Bengaluru|${US_STATES})\\b`, "i");
+const NON_EU_CODES = /\bUS\b|,\s*(AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY|DC)\b/;
+const NON_EU_PLACE = { test: (s) => NON_EU_NAMES.test(s) || NON_EU_CODES.test(s) };
 
 // ---------- profile ----------
 function listProfiles() {
@@ -567,34 +580,59 @@ function dedupe(jobs) {
 
 // ---------- where can they work ----------
 function locationSignals(job, profile) {
-  const loc = `${job.title} ${job.location}`;
-  const text = `${loc} ${job.description}`;
-  const has = (res, s) => (Array.isArray(res) ? res : [res]).some((r) => r.test(s));
-  return {
-    local: !!profile.localPlaces?.test(loc),
-    us: has(US_ONLY, loc) || (!has(WORLDWIDE, loc) && !has(EUROPE, loc) && has(US_ONLY, text)),
-    europe: has(EUROPE, loc) || (!has(US_ONLY, loc) && has(EUROPE, text)),
-    worldwide: has(WORLDWIDE, loc) || (!has(US_ONLY, loc) && has(WORLDWIDE, text)),
-    country: EU_COUNTRY.test(job.location) ? (job.location.match(EU_COUNTRY) || [""])[0] : "",
-  };
+  const loc = job.location || "";
+  const titleLoc = `${job.title} ${loc}`;
+  const text = job.description || "";
+  const codes = [...loc.matchAll(CC_RE)].map((m) => m[1]);
+  const euCodes = [...new Set(codes.filter((c) => EUROPE_CC.has(c)))];
+  const otherCodes = [...new Set(codes.filter((c) => !EUROPE_CC.has(c)))];
+  // with country codes present, trust them; otherwise look for place names
+  // (only in the title when codes exist, so "Dublin, Ohio, US" isn't Ireland)
+  const euPlace = euCodes.length ? euCodes.join(", ")
+    : ((codes.length ? job.title : titleLoc).match(EU_PLACE) || [""])[0];
+  const nonEu = otherCodes.length > 0 || NON_EU_PLACE.test(loc) || US_ONLY.some((r) => r.test(titleLoc));
+  const localMatch = profile.localPlaces ? (titleLoc.match(profile.localPlaces) || [""])[0] : "";
+  const sig = { local: localMatch, where: "", why: "", job };
+
+  if (LOC_WORLDWIDE.test(loc)) return { ...sig, where: "worldwide" };
+  if (LOC_EUROPE.test(loc)) return { ...sig, where: "europe" };
+  if (euPlace) return { ...sig, where: "country", country: euPlace, alsoNonEu: nonEu };
+  if (nonEu) {
+    // a US/Americas location can still be opened up by an explicit line in the ad
+    if (!US_ONLY.some((r) => r.test(text))) {
+      if (TEXT_WORLDWIDE.test(text)) return { ...sig, where: "worldwide", why: "ad says so" };
+      if (TEXT_EUROPE.test(text)) return { ...sig, where: "europe", why: "ad says so" };
+    }
+    const label = otherCodes.length ? otherCodes.slice(0, 3).join("/") : "US";
+    return { ...sig, where: "elsewhere", label: otherCodes.includes("US") || !otherCodes.length ? "US" : label };
+  }
+  // no usable location: go by explicit lines in the ad
+  if (US_ONLY.some((r) => r.test(text))) return { ...sig, where: "elsewhere", label: "US" };
+  if (TEXT_WORLDWIDE.test(text)) return { ...sig, where: "worldwide", why: "ad says so" };
+  if (TEXT_EUROPE.test(text)) return { ...sig, where: "europe", why: "ad says so" };
+  // jobs_db is a US-only search, so a remote role with no location there is a US role
+  if (job.source === "jobs_db") return { ...sig, where: "elsewhere", label: "US" };
+  return { ...sig, where: "unknown" };
 }
 
 // Returns [label, keep?]. Labels: local, ok, maybe, check, restricted.
 function eligibility(sig, profile) {
-  if (sig.local) return ["local", true];
-  const where = sig.worldwide ? "worldwide" : sig.europe ? "Europe" : sig.us ? "US" : sig.country || "?";
-  if (profile.region === "europe") {
-    if (sig.worldwide || (sig.europe && !sig.us)) return [`ok (${where})`, true];
-    if (sig.us) return ["restricted (US only)", false];
-    if (sig.country) return [`maybe (${sig.country})`, true];
-    return ["check", true];
+  if (sig.local) return [isRemote(sig.job) ? `ok (${sig.local})` : `local (${sig.local})`, true];
+  const note = sig.why ? `, ${sig.why}` : "";
+  switch (sig.where) {
+    case "worldwide": return [`ok (worldwide${note})`, true];
+    case "europe":
+      return profile.region === "us" ? ["restricted (Europe)", false] : [`ok (Europe${note})`, true];
+    case "country":
+      if (profile.region === "us") return sig.alsoNonEu ? ["maybe (US + Europe)", true] : [`restricted (${sig.country})`, false];
+      return [`maybe (${sig.country})`, true];
+    case "elsewhere":
+      if (profile.region === "europe") return [`restricted (${sig.label})`, false];
+      if (profile.region === "us" && sig.label !== "US") return [`restricted (${sig.label})`, false];
+      return [`ok (${sig.label})`, true];
+    default:
+      return ["check", true];
   }
-  if (profile.region === "us") {
-    if (sig.worldwide || sig.us) return [`ok (${where})`, true];
-    if (sig.europe || sig.country) return [`restricted (${sig.europe ? "Europe" : sig.country})`, false];
-    return ["check", true];
-  }
-  return [where === "?" ? "check" : `ok (${where})`, true]; // anywhere
 }
 
 function isRemote(job) {
@@ -757,7 +795,7 @@ async function main() {
     if (profile.titleBoost?.test(j.title)) score += 8;
     if (profile.titlePenalty?.test(j.title)) score -= 15;
     if (!j.description) score -= 10; // title-only match, less certain
-    const keep = ok && (!profile.remoteOnly || remote || elig === "local");
+    const keep = ok && (!profile.remoteOnly || remote || elig.startsWith("local"));
     return {
       ...j, score: Math.max(0, Math.min(100, Math.round(score))), eligibility: elig, keep,
       workplace: remote ? "remote" : "onsite/hybrid",

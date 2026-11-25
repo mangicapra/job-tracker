@@ -77,12 +77,15 @@ A run that checks only some sources (for example `--boards`) still records what 
 
 ## Reading the columns
 
-`eligibility` is a best guess from the location and description text:
-- `ok (worldwide)`, `ok (Europe)` or `ok (US)`: the ad points somewhere they can work.
-- `maybe (Germany)`: remote but tied to one country, which sometimes means residents only.
-- `check`: unclear, so read the ad.
-- `local`: one of their `localPlaces`.
-- `restricted (…)`: they can't take it. These are hidden unless you use `--all`.
+`eligibility` is worked out mainly from the job's location field. The description only counts when it says outright where people can work from, like "work from anywhere", "remote within Europe" or "CET hours". A company calling itself "global" or mentioning customers in Europe doesn't count.
+- `ok (worldwide)`, `ok (Europe)` or `ok (US)`: the location points somewhere they can work. "ad says so" means it came from an explicit line in the description.
+- `ok (Bosnia)`: the role lists one of their `localPlaces` as a place it can be done from.
+- `local (Sarajevo)`: an onsite or hybrid role in one of their `localPlaces`.
+- `maybe (Germany)`: remote but tied to specific countries, which often means residents only. Read the ad.
+- `check`: no usable location at all, so read the ad.
+- `restricted (US)`: they can't take it. These are hidden unless you use `--all`.
+
+jobs_db only has US listings, so a jobs_db role with no location is treated as US.
 
 `score` (0–100) is rough keyword overlap with the CV, plus the title boosts and penalties. Use it to sort the list, not as a verdict on any single role.
 
