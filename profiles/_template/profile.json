@@ -22,8 +22,7 @@
   "canWorkIn": "europe",
   "remoteOnly": true,
   "localPlaces": [
-    "bosnia",
-    "banja luka",
-    "sarajevo"
+    "London",
+    "Liverpool"
   ]
 }

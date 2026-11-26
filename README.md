@@ -2,7 +2,7 @@
 
 Finds roles a person can actually take, scores them against their CV, and shows what's new since the last run. It works for any role and any person: each person gets a folder under `profiles/` with their CV, what they're looking for and the companies they want to watch.
 
-Roles come from three places. The first is the public jobs_db API, a snapshot of US job listings from hiring.cafe, searched by the titles in the profile. The second is the public job-board APIs of the companies in the person's `watchlist.txt`. Greenhouse, Lever, Ashby, Workable and the others publish open roles as JSON so companies can show them on their careers pages. The third is the job sites in `sites.txt` that publish an API or feed: 4dayweek.io, the speedrun talent network, Working Nomads, and any site with an RSS feed. The script never scrapes HTML or Google. Sites without a feed are listed in `sites.txt` with the reason they're not included.
+Roles come from three places. The first is the public jobs_db API, a snapshot of US job listings from hiring.cafe, searched by the titles in the profile. The second is the public job-board APIs of the companies in the person's `watchlist.txt`. Greenhouse, Lever, Ashby, Workable and the others publish open roles as JSON so companies can show them on their careers pages. The third is the job sites in `sites.txt` that publish an API or feed: 4dayweek.io, the speedrun talent network, Working Nomads, Himalayas, Remote OK, We Work Remotely (RSS), and any other site with an RSS feed. The script never scrapes HTML or Google. Sites without a feed are listed in `sites.txt` with the reason they're not included.
 
 The same role often shows up in several places, so duplicates are merged before anything is scored (see "Duplicates" below).
 
@@ -30,6 +30,7 @@ If there's only one profile, you can leave out the name.
    - `excludeTitles`: titles to drop even if they match, e.g. `"manager"` or `"intern"`.
    - `boostTitleWords` / `avoidTitleWords`: title words that push a role up or down the list, for focus or seniority.
    - `canWorkIn`: `"europe"`, `"us"` or `"anywhere"`. Decides which remote roles count as ones they can take.
+   - `homeCountry`: two-letter country code of where they live, e.g. `"BA"` for Bosnia and Herzegovina. Optional. Sites that can filter by it (currently Himalayas) then return only roles open to that country, worldwide roles included.
    - `remoteOnly`: `true` keeps remote roles only, plus onsite roles in `localPlaces`.
    - `localPlaces`: cities or countries where onsite or hybrid work is fine for them.
    - `skills` (optional): a hand-written skill list. Leave it out to use automatic matching (see below).
@@ -47,7 +48,13 @@ A good approach for a new kind of role: start in automatic mode, read the keywor
 
 ## Job sites (`sites.txt`)
 
-`sites.txt` is shared by every profile. Each site is searched with the titles from the profile being run. Remove a line to stop using a site. To add a site with an RSS feed, add `rss <feed url>`. The euremotejobs line is a guess at their feed address. If it's wrong, the source check at the bottom of the keyword report will show it as not found.
+`sites.txt` is shared by every profile. Each site is searched with the titles from the profile being run. Remove a line to stop using a site. To add a site with an RSS feed, add `rss <feed url>`. You can put a comment after a site name with `#`.
+
+Some sites ask for something in return for using their data. Remote OK and We Work Remotely ask for a link back and credit, 4dayweek and Himalayas ask for credit if you publish their jobs, and Himalayas doesn't allow passing its jobs on to other job boards. The CSVs always keep each job's link back to where it was found.
+
+Himalayas and 4dayweek are searched once per title, with a pause between requests to stay under their rate limits. With many titles in a profile, these two take the most time: around a minute each for 20+ titles.
+
+The euremotejobs line is a guess at their feed address. If it's wrong, the source check at the bottom of the keyword report will show it as not found.
 
 ## Duplicates
 
@@ -88,6 +95,12 @@ A run that checks only some sources (for example `--boards`) still records what 
 jobs_db only has US listings, so a jobs_db role with no location is treated as US.
 
 `score` (0–100) is rough keyword overlap with the CV, plus the title boosts and penalties. Use it to sort the list, not as a verdict on any single role.
+
+## Keeping profiles private
+
+Profiles hold a CV with contact details, so `.gitignore` keeps everything in `profiles/` out of git except `profiles/_template`, and keeps every `out/` folder out too. You can push the code to a public repo and keep your own profile folder on your computer.
+
+If a profile was committed before the `.gitignore` was added, deleting the folder in a later commit doesn't remove it from the repo: it's still in the history. To remove it for good, rewrite the history (for example `git filter-repo --path profiles/<name> --invert-paths`, then force-push) or delete the repo on GitHub and push a fresh one.
 
 ## Notes
 

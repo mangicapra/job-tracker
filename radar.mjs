@@ -103,6 +103,7 @@ function loadProfile() {
     region: (p.canWorkIn || "anywhere").toLowerCase(), // "europe" | "us" | "anywhere"
     localPlaces: anyOf(p.localPlaces),
     remoteOnly: p.remoteOnly !== false,
+    homeCountry: (p.homeCountry || "").trim(), // ISO code like "BA"; lets sites that support it filter by where you live
     skills: Array.isArray(p.skills) && p.skills.length
       ? p.skills.map(([label, re, w]) => [label, new RegExp(re, "i"), w || 1]) : null,
     cv: fs.readFileSync(cvFile, "utf8").replace(/\S+@\S+/g, " ").replace(/\b(email|phone|tel)\s*:/gi, " "),
@@ -132,7 +133,8 @@ function toText(html) {
 async function getJSON(url, opts = {}, tries = 2) {
   for (let i = 0; i < tries; i++) {
     try {
-      const res = await fetch(url, { ...opts, signal: AbortSignal.timeout(30000) });
+      const headers = { "user-agent": "job-radar (personal job search script)", ...(opts.headers || {}) };
+      const res = await fetch(url, { ...opts, headers, signal: AbortSignal.timeout(30000) });
       if (res.status === 404) return { notFound: true };
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const type = res.headers.get("content-type") || "";
@@ -461,6 +463,56 @@ const SITES = {
     }));
   },
 
+  // Himalayas — documented public API, no key needed (a free key raises the limits).
+  // Their terms: use the applicationLink as is, credit Himalayas, don't republish
+  // the jobs to other boards. Searching with your home country returns only roles
+  // open to it, worldwide ones included.
+  async himalayas(profile) {
+    const out = [];
+    const seen = new Set();
+    for (const q of titleQueries(profile)) {
+      for (let page = 1; page <= 3; page++) {
+        const params = new URLSearchParams({ q, page: String(page) });
+        if (profile.homeCountry) params.set("country", profile.homeCountry);
+        log(`himalayas: "${q}" page ${page}`);
+        const data = await getJSON(`https://himalayas.app/jobs/api/search?${params}`);
+        await sleep(1500); // no published limit without a key, so go gently
+        const jobs = Array.isArray(data?.jobs) ? data.jobs : [];
+        if (data?.notFound || !jobs.length) break;
+        for (const j of jobs) {
+          if (seen.has(j.guid)) continue;
+          seen.add(j.guid);
+          const places = (j.locationRestrictions || []).map((l) => (typeof l === "string" ? l : l?.name || l?.alpha2 || "")).filter(Boolean);
+          out.push({
+            id: `hm:${j.guid}`, title: j.title || "", company: j.companyName || "",
+            location: places.length ? `Remote (${places.join(", ")})` : "Remote (worldwide)", remote: true,
+            salary: j.minSalary || j.maxSalary
+              ? `${j.currency || ""} ${j.minSalary || "?"}–${j.maxSalary || "?"}${j.salaryPeriod && j.salaryPeriod !== "annual" ? "/" + j.salaryPeriod : "/yr"}`.trim() : "",
+            url: j.applicationLink || "", posted: j.pubDate ? new Date(j.pubDate * 1000).toISOString().slice(0, 10) : "",
+            description: toText(j.description || j.excerpt || ""),
+          });
+        }
+      }
+    }
+    return out;
+  },
+
+  // Remote OK — public JSON feed of recent remote jobs (one request). Their terms
+  // ask you to link back to the job on Remote OK and name them as the source.
+  async remoteok() {
+    log("remoteok: downloading the feed…");
+    let data = await getJSON("https://remoteok.com/api");
+    if (data?.notFound || !Array.isArray(data)) data = await getJSON("https://remoteok.com/json");
+    if (data?.notFound || !Array.isArray(data)) return null;
+    return data.filter((j) => j && j.id && j.position).map((j) => ({
+      id: `rok:${j.id}`, title: j.position || "", company: j.company || "",
+      location: `Remote${j.location ? ` (${j.location})` : ""}`, remote: true,
+      salary: j.salary_min || j.salary_max ? `$${j.salary_min || "?"}–${j.salary_max || "?"}/yr` : "",
+      url: j.url || "", posted: (j.date || "").slice(0, 10),
+      description: toText(`${j.description || ""} ${(j.tags || []).join(" ")}`),
+    }));
+  },
+
   // Any RSS feed of jobs: "rss <url>" in sites.txt
   async rss(profile, url) {
     log(`rss: downloading ${url}…`);
@@ -478,7 +530,7 @@ const SITES = {
       if (!company && at) { title = at[1]; company = at[2]; } else if (!company && colon) { company = colon[1]; title = colon[2]; }
       const link = tag(it, "link") || (it.match(/<link[^>]*href="([^"]+)"/) || [])[1] || "";
       const desc = tag(it, "description") || tag(it, "content:encoded");
-      const loc = tag(it, "location") || tag(it, "job_listing:location") || "";
+      const loc = tag(it, "location") || tag(it, "job_listing:location") || tag(it, "region") || "";
       return {
         id: `rss:${host}:${tag(it, "guid") || link}`, title, company, location: loc,
         remote: /remote|anywhere/i.test(`${loc} ${title} ${desc}`) || undefined,
@@ -495,7 +547,7 @@ async function fromSites(profile) {
   const report = [];
   const all = [];
   for (const raw of fs.readFileSync(file, "utf8").split("\n")) {
-    const line = raw.trim();
+    const line = raw.replace(/\s#.*$/, "").trim(); // allow comments after a site name
     if (!line || line.startsWith("#")) continue;
     const [name, arg] = line.split(/\s+/, 2);
     const fn = SITES[name];
@@ -523,7 +575,7 @@ async function fromSites(profile) {
 // count as the same if they share a link, or the same company and title once
 // legal suffixes, locations and punctuation are stripped.
 const SOURCE_RANK = { greenhouse: 1, lever: 1, ashby: 1, workable: 1, smartrecruiters: 1, recruitee: 1, personio: 1,
-  bamboohr: 1, breezy: 1, "4dayweek": 2, speedrun: 2, jobs_db: 3, workingnomads: 4 };
+  bamboohr: 1, breezy: 1, "4dayweek": 2, speedrun: 2, himalayas: 2, jobs_db: 3, workingnomads: 4, remoteok: 4 };
 const rank = (s) => SOURCE_RANK[s] || 5;
 
 function normCompany(s) {

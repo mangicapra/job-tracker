@@ -3,18 +3,29 @@
 # Lines starting with # are ignored. Results appear in the "Source check"
 # section of keyword-report.md, so you'll see if one stops working.
 
-# Public API, no key needed. 4dayweek asks for a credit if you publish its data.
-4dayweek
+# Public APIs, no key needed
+4dayweek        # asks for a credit if you publish its data
 speedrun
 workingnomads
+himalayas       # uses "homeCountry" from the profile to return only roles open to you
+remoteok        # asks you to link back to Remote OK and name it as the source
 
-# Any job site with an RSS feed works too: "rss" then the feed URL.
+# RSS feeds: "rss" then the feed URL. Any job site with an RSS feed works.
+rss https://weworkremotely.com/categories/remote-product-jobs.rss
+rss https://weworkremotely.com/remote-jobs.rss
 # Unverified guess (it's a WordPress site, and this is the usual job feed address):
 rss https://euremotejobs.com/?feed=job_feed
 
 # Not supported, and why. Add them back here if they ever publish a feed.
 #   wellfound.com         blocks automated access and its terms forbid scraping
 #   jobgether.com         reposts jobs from elsewhere behind a paywall
+#   flexjobs.com          paid membership, no public feed
+#   dailyremote.com       no feed; pushes a paid tier for many listings
+#   remote.co, justremote.co
+#                         no feed or API
+#   arc.dev               talent marketplace: you're matched to companies, no public feed
+#   ycombinator.com       no public feed; Work at a Startup needs an account
+#   remotearmyph.com      a virtual-assistant agency, not a job board
 #   kickresume.com        a CV builder with job matching, not a job board
 #   gofractional.com      members-only marketplace; you apply to join
 #   portfoliojobs.a16z.com, indexventures.com/startup-jobs, builtineurope.com (Balderton)
@@ -24,7 +35,6 @@ rss https://euremotejobs.com/?feed=job_feed
 #   lennysjobs.com        no feed (runs on TrueUp, which collects from company boards)
 #   remotefront.com, remoteted.com, startupmap.one
 #                         no feed; they also collect from company career pages
-#   euremotejobs.com      see the rss line above
 #   jsgurujobs.com        no feed; JavaScript developer roles only
 #   justjoin.it, nofluffjobs.com
 #                         Polish IT boards with no documented public API
